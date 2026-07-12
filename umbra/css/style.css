@@ -2,9 +2,8 @@ html, body {
   margin: 0;
   padding: 0;
   height: 100%;
-  background: #05050c;
+  background: #000;
   overflow: hidden;
-  overscroll-behavior: none;
 }
 
 body {
@@ -15,8 +14,7 @@ body {
 
 #game {
   display: block;
-  background: #05050c;
+  background: #000;
+  cursor: default;
   touch-action: none;
-  -webkit-tap-highlight-color: transparent;
-  cursor: pointer;
 }
