@@ -1,85 +1,96 @@
-# HUNDO
+# LOCKSTEP
 
-*100 rooms. one button. no mercy.*
+*they move when you move*
 
-A one-button gauntlet across **100 chapters** that keeps changing what the
-button does — and keeps lying to you about everything else.
+A turn-locked dungeon of **100 rooms**. The world is frozen until you take a
+step — then everything answers at once. The hound lunges. Your mimic copies
+your exact move. The mirror-wraith does the opposite. The warden's eye
+counts to four. And the floor? The floor might be lying.
 
-**Play:** open `index.html` in any browser. One tap is the entire control
-scheme, so it plays identically on desktop (space / click) and phones
-(touch). No build, no dependencies.
+**Play:** open `index.html` in any browser. Arrows/WASD to step, space to
+wait, on phones swipe to step and tap to wait. No build, no dependencies.
 
-## The gimmick
+## How it plays
 
-Your square runs forward on its own. You have one button. What the button
-*means* depends on where you are:
+Every room is a small machine and the monsters are its moving parts:
 
-| world | chapters | the button |
-|---|---|---|
-| 1 · RUNNER | 1–10 | tap = **jump** |
-| 2 · LIAR | 11–20 | jump, but the level cheats |
-| 3 · CEILING | 21–30 | tap = **flip gravity** |
-| 4 · TWO-FACED | 31–40 | gravity, plus lies |
-| 5 · GHOST | 41–50 | tap = **phase dash** through anything |
-| 6 · THRUST | 51–60 | hold = **jetpack** |
-| 7 · PATIENCE | 61–70 | hold = **freeze** (the saws don't) |
-| 8 · DOUBLES | 71–80 | jump, twice, fast |
-| 9 · BABEL | 81–90 | the verb changes **mid-level** |
-| 10 · HELL | 91–100 | everything. at speed. good luck |
+- **Hounds** chase you greedily. Pits and spikes don't chase anyone — walk
+  the hound into them.
+- **Mimics** copy your every move, step for step. To kill your mimic you
+  have to walk *yourself* in a way that walks *it* somewhere fatal.
+- **Mirrors** do the exact opposite. Two wrongs, routed correctly, make a
+  right.
+- **Wardens** never move, but every fourth step they fire down their row
+  and column. Count. Or hide behind a boulder.
+- **Boulders** push (sokoban rules), crush monsters, plug pits, block beams.
+- **Ice** doesn't stop for you. **Crumble tiles** are one-use.
+  **Keys** open doors, once.
+- And world 9 is called LIES: pressure runes disguised as floor, exits that
+  aren't, statues that wake up.
 
-Difficulty ramps within every world and across the whole run — wider gaps,
-faster scroll, tighter timings, nastier combinations.
+Undo (`Z`) is always available — this is chess, not a rhythm game. But
+deaths are counted forever, and each room's **par is the provably optimal
+move count**: matching it earns 3 stars. 300 stars exist. Good luck.
 
-The lies: spikes that pop up behind a trigger you can't see, walls that
-turn out to be holograms, spikes that turn out to be paint, and finish
-gates that are not the finish gate.
+## The worlds
 
-## Every chapter is provably beatable
+1. **STEPS** — learn that the world moves in lockstep
+2. **HOUNDS** — bait
+3. **MIMICS** — you are your own worst enemy
+4. **MIRRORS** — and your opposite is no better
+5. **WARDENS** — count to four, forever
+6. **STONES** — mass beats malice
+7. **ICE** — commitment
+8. **KEYS** — economy
+9. **LIES** — trust nothing
+10. **LOCKSTEP** — everything, all at once
 
-The levels are composed by `tools/generate.mjs`, and the generator will not
-ship a chapter it cannot beat: it runs a breadth-first search over the real
-game simulation (`js/sim.js` — the same code the game executes) until it
-finds a working tap sequence. Unbeatable compositions get thrown away and
-regenerated. The winning tap scripts are kept in `tools/solutions.json` and
-replayed in a real browser as part of testing.
+## Machine-proven, mechanically honest
 
-So when you die for the 40th time: it's you.
+Rooms come from `tools/generate.mjs`, which holds each candidate to three
+standards before it ships:
 
-- Instant respawn, attempt counter, per-chapter progress bar with your best
-  distance ghosted in.
-- Progress saves automatically (localStorage). Chapter select on the menu.
-- Procedural synthwave soundtrack that gets faster and busier per world —
-  no audio files, everything is synthesized live.
+1. **Solvable** — proven by exhaustive breadth-first search over the full
+   game state (player, monsters, boulders, keys, broken tiles), using the
+   exact same simulation the game runs (`js/sim.js`).
+2. **Not trivial** — minimum optimal-solution length per world.
+3. **The monsters matter** — the prover re-solves each room with every
+   monster deleted; if the empty room solves in the same number of moves,
+   the monsters were decoration and the room is rejected.
 
-## Controls
+Survivors are ranked by measured difficulty (optimal length plus how often
+random play dies in there) and each world's ten rooms are picked in
+ascending order — so the game gets harder because it *measurably is*, not
+because the numbers went up. Par values are the true optima. The winning
+move sequences live in `tools/solutions.json` and are replayed through the
+real game in a browser as part of testing.
 
-|            |                             |
-|------------|-----------------------------|
-| the button | `space` / `↑` / `W` / click / tap |
-| restart    | `R`                         |
-| menu       | `esc`                       |
-| mute       | `M`                         |
-
-## Hosting
-
-Static files. GitHub Pages (Settings → Pages → deploy from branch),
-Netlify, itch.io — anywhere.
-
-## Regenerating / adding levels
+Regenerate everything with:
 
 ```
 node tools/generate.mjs
 ```
 
-Segment patterns live in `tools/segments.mjs` on a simple ASCII grid.
-Add patterns, re-run the generator, and it will only emit chapters it can
-prove are beatable.
+## Controls
+
+|            |                                  |
+|------------|----------------------------------|
+| step       | arrows / WASD / swipe            |
+| wait       | `space` / `.` / tap              |
+| undo       | `Z` / tap bottom-left            |
+| restart    | `R` / tap bottom-right           |
+| menu       | `esc` / tap top-left             |
+| mute       | `M` / tap top-right              |
+
+## Hosting
+
+Static files — GitHub Pages, Netlify, Vercel, itch.io, anywhere.
 
 ---
 
-Also in this repo: [`umbra/`](umbra/) — a slower, darker LIMBO-style
-puzzle-platformer from an earlier experiment. Different game, same
-one-sitting spirit.
+Also in this repo, from earlier experiments: [`hundo/`](hundo/) — a
+100-chapter one-button runner, and [`umbra/`](umbra/) — a LIMBO-style
+silhouette platformer. Three games, one repo, escalating ambition.
 
 ## License
 

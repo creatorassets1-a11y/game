@@ -1,418 +1,304 @@
-// HUNDO - core simulation. Pure and deterministic: the renderer draws it,
-// and the level solver (tools/) proves every chapter beatable with it.
-// One input bit per frame. That's the whole game.
+// LOCKSTEP - the turn engine. Nothing in the world moves until you do;
+// when you step, everything answers. Pure and deterministic: the renderer
+// animates it and the room prover (tools/) searches it exhaustively.
+//
+// Grid characters:
+//   # wall        . floor       ^ spikes      O pit         % crumble
+//   ~ ice         + pressure rune (a trap that looks like floor)
+//   E exit        F fake exit   K key         D locked door
+//   B boulder     P player
+//   c hound (chases)            s sleeper hound (statue until close)
+//   m mimic (copies your move)  r mirror (does the opposite)
+//   h patrol (horizontal)       v patrol (vertical)
+//   t turret (counts turns, then fires down its row and column)
+//
+// Moves: 'U' 'D' 'L' 'R' 'W' (wait).
 
 (function (root) {
 'use strict';
 
-const TILE = 32;
-const P = 24;                 // player square
-const GRAV = 0.62;
-const MAXFALL = 13;
-const JUMP_V = -9.6;
-const PAD_V = -14.2;
-const COYOTE = 5;
-const BUFFER = 6;
-const DASH_T = 12;            // frames of dash
-const DASH_MUL = 2.2;
-const FLOAT_THRUST = 1.35;
-const FLOAT_CAP = -6.4;
-const SAW_R = 13;
-const SAW_PERIOD = 120;
-const SAW_RANGE = 64;
-const KILL_PAD = 5;           // hitbox forgiveness on each side
+const DIRS = { U: [0, -1], D: [0, 1], L: [-1, 0], R: [1, 0], W: [0, 0] };
+const TURRET_PERIOD = 4;   // 0,1 idle - 2 charge - 3 fire
 
-// verbs: what the button means this chapter
-// jump  - tap to jump
-// jump2 - tap to jump, one extra jump in the air
-// flip  - tap to flip gravity (only while standing)
-// dash  - tap to phase forward through anything
-// float - hold to thrust upward
-// stop  - hold to stand still (the world keeps moving)
-
-function parseLevel(def) {
+function parseRoom(def) {
   const rows = def.map;
   const h = rows.length, w = rows[0].length;
-  const solids = [];        // static solid grid, 1/0
-  const oneways = [];
-  const spikes = [];        // {x,y,dir}
-  const saws = [];          // {cx,cy,move:'','h','v'}
-  const crumbles = [];      // {tx,ty} indexed
-  const pads = [];          // {tx,ty,kind:'bounce'|'grav'|verb}
-  const popups = [];        // troll: {trigX, cols:[tx,tx+1], ty}
-  const phantoms = [];      // troll: fake walls {tx,ty}
-  const fakespikes = [];    // troll: harmless
-  const fakeExits = [];     // troll: lethal portal {tx}
-  let startX = TILE * 2;
-
-  for (let ty = 0; ty < h; ty++) {
-    solids.push(new Array(w).fill(0));
-    oneways.push(new Array(w).fill(0));
-  }
-  for (let ty = 0; ty < h; ty++) {
-    for (let tx = 0; tx < w; tx++) {
-      const c = rows[ty][tx];
-      const cx = tx * TILE + TILE / 2, cy = ty * TILE + TILE / 2;
-      switch (c) {
-        case '#': solids[ty][tx] = 1; break;
-        case '-': oneways[ty][tx] = 1; break;
-        case '^': spikes.push({ tx, ty, dir: 0 }); break;
-        case 'v': spikes.push({ tx, ty, dir: 1 }); break;
-        case '<': spikes.push({ tx, ty, dir: 2 }); break;
-        case '>': spikes.push({ tx, ty, dir: 3 }); break;
-        case '!': fakespikes.push({ tx, ty }); break;
-        case '*': saws.push({ cx, cy, move: '' }); break;
-        case 'H': saws.push({ cx, cy, move: 'h' }); break;
-        case 'V': saws.push({ cx, cy, move: 'v' }); break;
-        case '%': crumbles.push({ tx, ty }); break;
-        case '=': pads.push({ tx, ty, kind: 'bounce' }); break;
-        case 'g': pads.push({ tx, ty, kind: 'grav' }); break;
-        case 'J': pads.push({ tx, ty, kind: 'jump' }); break;
-        case 'K': pads.push({ tx, ty, kind: 'jump2' }); break;
-        case 'F': pads.push({ tx, ty, kind: 'flip' }); break;
-        case 'D': pads.push({ tx, ty, kind: 'dash' }); break;
-        case 'L': pads.push({ tx, ty, kind: 'float' }); break;
-        case 'P': pads.push({ tx, ty, kind: 'stop' }); break;
-        case 'T': popups.push({ tx, ty }); break;
-        case 'W': phantoms.push({ tx, ty }); break;
-        case 'X': fakeExits.push({ tx, ty }); break;
-        case 'S': startX = tx * TILE + 4; break;
+  const tiles = [];          // static-ish layer, mutated copies live in state
+  const ents = [];
+  let px = 1, py = 1;
+  for (let y = 0; y < h; y++) {
+    const line = [];
+    for (let x = 0; x < w; x++) {
+      let c = rows[y][x];
+      if (c === 'P') { px = x; py = y; c = '.'; }
+      else if ('csmrhvt'.includes(c)) {
+        ents.push({
+          kind: c === 'h' || c === 'v' ? 'patrol' : c === 'c' ? 'hound' : c === 's' ? 'sleeper' : c === 'm' ? 'mimic' : c === 'r' ? 'mirror' : 'turret',
+          x, y,
+          dir: c === 'h' ? 1 : c === 'v' ? 1 : 0,
+          axis: c === 'h' ? 'h' : c === 'v' ? 'v' : null,
+          awake: c !== 's'
+        });
+        c = '.';
+      } else if (c === 'B') {
+        ents.push({ kind: 'boulder', x, y, awake: true });
+        c = '.';
       }
+      line.push(c);
     }
+    tiles.push(line);
   }
-  // popup spikes: appear on the two columns after their trigger column,
-  // planted on the first solid below the trigger row
-  for (const p of popups) {
-    p.trigX = (p.tx + 1) * TILE;   // becomes lethal once the player passes this
-    p.cols = [p.tx + 2, p.tx + 3];
-  }
-  return {
-    def, w, h, solids, oneways, spikes, saws, crumbles, pads,
-    popups, phantoms, fakespikes, fakeExits,
-    startX,
-    finishX: (w - 2) * TILE,
-    speed: def.speed,
-    verb: def.verb,
-    pxw: w * TILE, pxh: h * TILE
-  };
+  return { def, w, h, tiles, ents, px, py, par: def.par || 0 };
 }
 
-function newState(lv) {
-  // find start ground: drop from top at startX
+function newState(room) {
   return {
-    t: 0,
-    x: lv.startX,
-    y: 0,
-    vy: 0,
-    grav: 1,
-    verb: lv.verb,
-    grounded: false,
-    coyote: 0,
-    buffer: 0,
-    canAir: false,      // spare air jump for jump2
-    dashT: 0,
-    dashCd: 0,
-    crumbled: {},       // tileKey -> frame it broke
-    touched: {},        // crumble contact timers
-    usedPads: {},
-    dead: false,
-    deadBy: '',
+    px: room.px, py: room.py,
+    ents: room.ents.map(e => ({ ...e })),
+    tiles: room.tiles.map(r => r.slice()),
+    keys: 0,
+    turn: 0,
+    dead: false, deadBy: '',
     won: false,
-    // events for the renderer (cleared each step)
-    ev: null
+    ev: []               // events for the renderer, cleared each step
   };
 }
 
-const key = (tx, ty) => tx + ',' + ty;
+function tileAt(st, x, y) {
+  if (y < 0 || y >= st.tiles.length || x < 0 || x >= st.tiles[0].length) return '#';
+  return st.tiles[y][x];
+}
 
-function solidAt(lv, st, tx, ty) {
-  if (tx < 0 || ty < 0 || ty >= lv.h) return false;
-  if (tx >= lv.w) return false;
-  if (lv.solids[ty][tx]) {
-    return true;
+function entAt(st, x, y, skip) {
+  for (const e of st.ents) {
+    if (e === skip || e.deadE) continue;
+    if (e.x === x && e.y === y) return e;
   }
+  return null;
+}
+
+function blocksEnemy(st, x, y, self) {
+  const t = tileAt(st, x, y);
+  if (t === '#' || t === 'D') return true;
+  const o = entAt(st, x, y, self);
+  if (o && o.kind !== 'boulder') return true;   // enemies never stack
+  if (o && o.kind === 'boulder') return true;   // or shove boulders
   return false;
 }
 
-function crumbleAt(lv, st, tx, ty) {
-  for (const c of lv.crumbles) {
-    if (c.tx === tx && c.ty === ty && !st.crumbled[key(tx, ty)]) return true;
+// what happens when an enemy enters a tile
+function enemyEnter(st, e, x, y) {
+  const t = tileAt(st, x, y);
+  e.x = x; e.y = y;
+  if (t === '^' || t === 'O' || t === '+') {
+    e.deadE = true;
+    st.ev.push({ t: 'entDie', x, y, kind: e.kind });
+    if (t === '+') { st.tiles[y][x] = '^'; st.ev.push({ t: 'rune', x, y }); }
   }
-  return false;
+  if (!e.deadE && x === st.px && y === st.py) {
+    st.dead = true; st.deadBy = e.kind;
+  }
 }
 
-function isSolid(lv, st, tx, ty) {
-  return solidAt(lv, st, tx, ty) || crumbleAt(lv, st, tx, ty);
+function tryPushBoulder(st, b, dx, dy) {
+  const nx = b.x + dx, ny = b.y + dy;
+  const t = tileAt(st, nx, ny);
+  if (t === '#' || t === 'D') return false;
+  const o = entAt(st, nx, ny, b);
+  if (o && o.kind === 'boulder') return false;
+  if (o) {
+    // crunch. satisfying.
+    o.deadE = true;
+    st.ev.push({ t: 'crush', x: nx, y: ny, kind: o.kind });
+  }
+  b.x = nx; b.y = ny;
+  st.ev.push({ t: 'push', x: nx, y: ny });
+  if (t === 'O') {
+    // boulder fills the pit: both become plain floor
+    b.deadE = true;
+    st.tiles[ny][nx] = '.';
+    st.ev.push({ t: 'fill', x: nx, y: ny });
+  } else if (t === '~') {
+    // boulders skid on ice
+    let cx = nx, cy = ny;
+    while (tileAt(st, cx + dx, cy + dy) === '~' && !entAt(st, cx + dx, cy + dy, b)) { cx += dx; cy += dy; }
+    // may slide off the ice onto one more regular tile
+    const ox = cx + dx, oy = cy + dy;
+    const ot = tileAt(st, ox, oy);
+    if (ot !== '#' && ot !== 'D' && !entAt(st, ox, oy, b) && tileAt(st, cx, cy) === '~') {
+      cx = ox; cy = oy;
+      if (ot === 'O') { b.deadE = true; st.tiles[oy][ox] = '.'; st.ev.push({ t: 'fill', x: ox, y: oy }); }
+    }
+    b.x = cx; b.y = cy;
+  }
+  return true;
 }
 
-function sawPos(lv, saw, t) {
-  if (!saw.move) return { x: saw.cx, y: saw.cy };
-  const ph = ((saw.cx * 7 + saw.cy * 13) % SAW_PERIOD + t) % SAW_PERIOD;
-  const d = Math.sin(ph / SAW_PERIOD * Math.PI * 2) * SAW_RANGE;
-  return saw.move === 'h' ? { x: saw.cx + d, y: saw.cy } : { x: saw.cx, y: saw.cy + d };
+// player tries to enter a cell; returns false if blocked
+function playerEnter(st, x, y, dx, dy) {
+  const t = tileAt(st, x, y);
+  if (t === '#') return false;
+  if (t === 'D') {
+    if (st.keys > 0) {
+      st.keys--;
+      st.tiles[y][x] = '.';
+      st.ev.push({ t: 'unlock', x, y });
+      return true;      // door opens, player steps in
+    }
+    return false;
+  }
+  const o = entAt(st, x, y);
+  if (o && o.kind === 'boulder') {
+    if (!tryPushBoulder(st, o, dx, dy)) return false;
+  } else if (o) {
+    // walking into a monster is a choice
+    st.dead = true; st.deadBy = o.kind;
+  }
+  return true;
 }
 
-function rectHit(px, py, rx, ry, rw, rh) {
-  return px + P - KILL_PAD > rx && px + KILL_PAD < rx + rw &&
-         py + P - KILL_PAD > ry && py + KILL_PAD < ry + rh;
+// effects of the player standing on a tile after moving into it
+function playerLand(st) {
+  const t = tileAt(st, st.px, st.py);
+  if (t === '^') { st.dead = true; st.deadBy = 'spikes'; }
+  else if (t === 'O') { st.dead = true; st.deadBy = 'pit'; }
+  else if (t === '+') {
+    st.tiles[st.py][st.px] = '^';
+    st.ev.push({ t: 'rune', x: st.px, y: st.py });
+    st.dead = true; st.deadBy = 'rune';
+  }
+  else if (t === 'K') { st.keys++; st.tiles[st.py][st.px] = '.'; st.ev.push({ t: 'key' }); }
+  else if (t === 'E') { st.won = true; }
+  else if (t === 'F') { st.dead = true; st.deadBy = 'fakeexit'; st.ev.push({ t: 'fake', x: st.px, y: st.py }); }
 }
 
-// one frame. input = button held this frame (boolean).
-function step(lv, st, input) {
-  st.t++;
-  st.ev = null;
+function step(room, st, move) {
   if (st.dead || st.won) return st;
+  st.ev = [];
+  const [dx, dy] = DIRS[move] || [0, 0];
+  const fromX = st.px, fromY = st.py;
+  const wasCrumble = tileAt(st, fromX, fromY) === '%';
 
-  const wasHeld = st._held || false;
-  const pressed = input && !wasHeld;
-  st._held = input;
-
-  // --- the verb ---------------------------------------------------------
-  if (pressed) st.buffer = BUFFER;
-  else if (st.buffer > 0) st.buffer--;
-
-  const v = st.verb;
-  if (st.dashT > 0) {
-    // dashing: no gravity, double speed, phase through everything
-    st.dashT--;
-    st.x += lv.speed * DASH_MUL;
-    if (st.dashT === 0) st.ev = 'dashEnd';
-  } else {
-    if (v === 'jump' || v === 'jump2') {
-      if (st.buffer > 0 && (st.grounded || st.coyote > 0)) {
-        st.vy = JUMP_V * st.grav;
-        st.grounded = false; st.coyote = 0; st.buffer = 0;
-        st.canAir = (v === 'jump2');
-        st.ev = 'jump';
-      } else if (st.buffer > 0 && v === 'jump2' && st.canAir) {
-        st.vy = JUMP_V * st.grav;
-        st.canAir = false; st.buffer = 0;
-        st.ev = 'jump';
-      }
-    } else if (v === 'flip') {
-      if (st.buffer > 0 && st.grounded) {
-        st.grav = -st.grav;
-        st.vy = 0;
-        st.grounded = false; st.buffer = 0;
-        st.ev = 'flip';
-      }
-    } else if (v === 'dash') {
-      if (pressed && st.dashCd === 0) {
-        st.dashT = DASH_T;
-        st.dashCd = -1;         // re-arms on landing
-        st.vy = 0;
-        st.ev = 'dash';
-        st.x += lv.speed * DASH_MUL;
-      }
-    } else if (v === 'float') {
-      if (input) {
-        st.vy -= FLOAT_THRUST * st.grav;
-        if (st.grav > 0 && st.vy < FLOAT_CAP) st.vy = FLOAT_CAP;
-        if (st.grav < 0 && st.vy > -FLOAT_CAP) st.vy = -FLOAT_CAP;
-        if (st.t % 4 === 0) st.ev = 'thrust';
-      }
-    }
-    // stop: handled below in horizontal movement
-
-    // --- horizontal -------------------------------------------------------
-    const stopped = (v === 'stop' && input && st.grounded);
-    if (!stopped) st.x += lv.speed;
-  }
-
-  const dashing = st.dashT > 0;
-
-  // wall crash (dash phases through)
-  if (!dashing) {
-    const front = st.x + P;
-    const ftx = Math.floor(front / TILE);
-    const ty0 = Math.floor((st.y + 3) / TILE);
-    const ty1 = Math.floor((st.y + P - 3) / TILE);
-    for (let ty = ty0; ty <= ty1; ty++) {
-      if (isSolid(lv, st, ftx, ty)) {
-        st.dead = true; st.deadBy = 'wall';
-        return st;
-      }
-    }
-  }
-
-  // --- vertical -----------------------------------------------------------
-  if (!dashing) {
-    st.vy += GRAV * st.grav;
-    if (st.vy > MAXFALL) st.vy = MAXFALL;
-    if (st.vy < -MAXFALL) st.vy = -MAXFALL;
-    st.y += st.vy;
-  }
-
-  const wasGrounded = st.grounded;
-  st.grounded = false;
-
-  if (!dashing) {
-    const tx0 = Math.floor((st.x + 2) / TILE);
-    const tx1 = Math.floor((st.x + P - 2) / TILE);
-    if (st.grav > 0) {
-      // floor
-      const fy = Math.floor((st.y + P) / TILE);
-      for (let tx = tx0; tx <= tx1; tx++) {
-        const oneway = fy >= 0 && fy < lv.h && lv.oneways[fy][tx] === 1;
-        if ((isSolid(lv, st, tx, fy) || (oneway && st.vy >= 0 && st.y + P - st.vy <= fy * TILE + 6)) && st.vy >= 0) {
-          st.y = fy * TILE - P;
-          if (st.vy > 8) st.ev = 'land';
-          st.vy = 0;
-          st.grounded = true;
-          if (crumbleAt(lv, st, tx, fy)) touchCrumble(st, tx, fy);
-          break;
-        }
-      }
-      // ceiling
-      const cy = Math.floor(st.y / TILE);
-      if (st.vy < 0) {
-        for (let tx = tx0; tx <= tx1; tx++) {
-          if (isSolid(lv, st, tx, cy)) { st.y = (cy + 1) * TILE; st.vy = 0; break; }
-        }
+  // ---- player ------------------------------------------------------------
+  if (dx || dy) {
+    if (playerEnter(st, st.px + dx, st.py + dy, dx, dy)) {
+      st.px += dx; st.py += dy;
+      playerLand(st);
+      // ice: keep sliding until something stops you
+      let guard = 0;
+      while (!st.dead && !st.won && tileAt(st, st.px, st.py) === '~' && guard++ < 32) {
+        const nx = st.px + dx, ny = st.py + dy;
+        const t = tileAt(st, nx, ny);
+        if (t === '#') break;
+        if (t === 'D' && st.keys === 0) break;
+        const o = entAt(st, nx, ny);
+        if (o && o.kind === 'boulder') { if (!tryPushBoulder(st, o, dx, dy)) break; }
+        else if (o) { st.dead = true; st.deadBy = o.kind; break; }
+        if (t === 'D') { st.keys--; st.tiles[ny][nx] = '.'; }
+        st.px = nx; st.py = ny;
+        playerLand(st);
       }
     } else {
-      // inverted gravity: "floor" is above
-      const fy = Math.floor(st.y / TILE);
-      for (let tx = tx0; tx <= tx1; tx++) {
-        if (isSolid(lv, st, tx, fy) && st.vy <= 0) {
-          st.y = (fy + 1) * TILE;
-          if (st.vy < -8) st.ev = 'land';
-          st.vy = 0;
-          st.grounded = true;
-          if (crumbleAt(lv, st, tx, fy)) touchCrumble(st, tx, fy);
-          break;
-        }
-      }
-      const cy = Math.floor((st.y + P) / TILE);
-      if (st.vy > 0) {
-        for (let tx = tx0; tx <= tx1; tx++) {
-          if (isSolid(lv, st, tx, cy)) { st.y = cy * TILE - P; st.vy = 0; break; }
-        }
-      }
+      st.ev.push({ t: 'bump' });
     }
   }
 
-  if (st.grounded) {
-    st.coyote = COYOTE;
-    if (st.dashCd === -1) st.dashCd = 0;   // dash re-armed
-  } else if (st.coyote > 0) st.coyote--;
+  // crumble the tile we left
+  if (wasCrumble && (st.px !== fromX || st.py !== fromY)) {
+    st.tiles[fromY][fromX] = 'O';
+    st.ev.push({ t: 'crumble', x: fromX, y: fromY });
+  }
 
-  // crumble timers tick even after you leave
-  for (const k in st.touched) {
-    st.touched[k]++;
-    if (st.touched[k] >= 9) {
-      st.crumbled[k] = st.t;
-      delete st.touched[k];
-      st.ev = 'crumble';
+  if (st.won) { st.turn++; return st; }
+
+  // ---- the world answers --------------------------------------------------
+  for (const e of st.ents) {
+    if (e.deadE || st.dead) continue;
+    if (e.kind === 'boulder' || e.kind === 'turret') continue;
+
+    if (e.kind === 'sleeper' && !e.awake) {
+      if (Math.abs(e.x - st.px) + Math.abs(e.y - st.py) <= 3) {
+        e.awake = true;
+        st.ev.push({ t: 'wake', x: e.x, y: e.y });
+      }
+      continue;
+    }
+
+    let mx = 0, my = 0;
+    if (e.kind === 'hound' || e.kind === 'sleeper') {
+      const ddx = st.px - e.x, ddy = st.py - e.y;
+      const tryMoves = Math.abs(ddx) >= Math.abs(ddy)
+        ? [[Math.sign(ddx), 0], [0, Math.sign(ddy)]]
+        : [[0, Math.sign(ddy)], [Math.sign(ddx), 0]];
+      for (const [tx, ty] of tryMoves) {
+        if ((tx || ty) && !blocksEnemy(st, e.x + tx, e.y + ty, e)) { mx = tx; my = ty; break; }
+      }
+    } else if (e.kind === 'mimic') {
+      mx = dx; my = dy;
+      if ((mx || my) && blocksEnemy(st, e.x + mx, e.y + my, e)) { mx = 0; my = 0; }
+    } else if (e.kind === 'mirror') {
+      mx = -dx; my = -dy;
+      if ((mx || my) && blocksEnemy(st, e.x + mx, e.y + my, e)) { mx = 0; my = 0; }
+    } else if (e.kind === 'patrol') {
+      const [ax, ay] = e.axis === 'h' ? [1, 0] : [0, 1];
+      let tx = ax * e.dir, ty = ay * e.dir;
+      if (blocksEnemy(st, e.x + tx, e.y + ty, e)) { e.dir = -e.dir; tx = -tx; ty = -ty; }
+      if (!blocksEnemy(st, e.x + tx, e.y + ty, e)) { mx = tx; my = ty; }
+    }
+
+    if (mx || my) enemyEnter(st, e, e.x + mx, e.y + my);
+    else if (e.x === st.px && e.y === st.py && !e.deadE) {
+      st.dead = true; st.deadBy = e.kind;
     }
   }
 
-  // --- pads ---------------------------------------------------------------
-  const ptx0 = Math.floor(st.x / TILE), ptx1 = Math.floor((st.x + P) / TILE);
-  const pty0 = Math.floor(st.y / TILE), pty1 = Math.floor((st.y + P) / TILE);
-  for (const pad of lv.pads) {
-    if (pad.tx < ptx0 - 1 || pad.tx > ptx1 + 1) continue;
-    const k = key(pad.tx, pad.ty);
-    if (st.usedPads[k]) continue;
-    if (pad.tx >= ptx0 && pad.tx <= ptx1 && pad.ty >= pty0 && pad.ty <= pty1) {
-      st.usedPads[k] = 1;
-      if (pad.kind === 'bounce') {
-        st.vy = PAD_V * st.grav;
-        st.grounded = false;
-        st.ev = 'bounce';
-      } else if (pad.kind === 'grav') {
-        st.grav = -st.grav;
-        st.vy = 0;
-        st.grounded = false;
-        st.ev = 'gravpad';
-      } else {
-        st.verb = pad.kind;
-        st.dashT = 0; st.dashCd = 0; st.canAir = false;
-        st.grav = 1;             // pads put your feet back on the floor
-        st.ev = 'verb:' + pad.kind;
-      }
-    }
-  }
-
-  // --- death --------------------------------------------------------------
-  if (!dashing) {
-    // out of the world
-    if (st.y > lv.pxh + 40 || st.y < -lv.pxh * 0.5 - 40) {
-      st.dead = true; st.deadBy = 'void';
-      return st;
-    }
-    // spikes (forgiving hitbox: a slab at the spike's base)
-    for (const s of lv.spikes) {
-      const bx = s.tx * TILE, by = s.ty * TILE;
-      let rx, ry, rw, rh;
-      if (s.dir === 0) { rx = bx + 8; ry = by + 12; rw = 16; rh = 20; }        // ^
-      else if (s.dir === 1) { rx = bx + 8; ry = by; rw = 16; rh = 20; }        // v
-      else if (s.dir === 2) { rx = bx; ry = by + 8; rw = 20; rh = 16; }        // <
-      else { rx = bx + 12; ry = by + 8; rw = 20; rh = 16; }                    // >
-      if (rectHit(st.x, st.y, rx, ry, rw, rh)) {
-        st.dead = true; st.deadBy = 'spike';
-        return st;
-      }
-    }
-    // popup spikes: lethal once you crossed their trigger line. surprise.
-    for (const p of lv.popups) {
-      if (st.x + P > p.trigX) {
-        for (const col of p.cols) {
-          const rx = col * TILE + 8, ry = p.ty * TILE + 12;
-          if (rectHit(st.x, st.y, rx, ry, 16, 20)) {
-            st.dead = true; st.deadBy = 'popup';
-            return st;
+  // ---- turrets fire on their cycle ----------------------------------------
+  st.turn++;
+  const phase = st.turn % TURRET_PERIOD;
+  for (const e of st.ents) {
+    if (e.deadE || e.kind !== 'turret') continue;
+    if (phase === TURRET_PERIOD - 2) st.ev.push({ t: 'charge', x: e.x, y: e.y });
+    if (phase === TURRET_PERIOD - 1) {
+      st.ev.push({ t: 'fire', x: e.x, y: e.y });
+      for (const [bx, by] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        let cx = e.x + bx, cy = e.y + by;
+        while (true) {
+          const t = tileAt(st, cx, cy);
+          if (t === '#' || t === 'D') break;
+          const o = entAt(st, cx, cy);
+          if (o && o.kind === 'boulder') break;          // boulders are cover
+          if (o && o.kind !== 'turret') {
+            o.deadE = true;
+            st.ev.push({ t: 'entDie', x: cx, y: cy, kind: o.kind });
           }
+          if (cx === st.px && cy === st.py) { st.dead = true; st.deadBy = 'beam'; }
+          cx += bx; cy += by;
         }
-      }
-    }
-    // saws
-    for (const s of lv.saws) {
-      const pos = sawPos(lv, s, st.t);
-      const cx = st.x + P / 2, cy2 = st.y + P / 2;
-      const dx = pos.x - cx, dy = pos.y - cy2;
-      const rr = SAW_R + P / 2 - KILL_PAD;
-      if (dx * dx + dy * dy < rr * rr) {
-        st.dead = true; st.deadBy = 'saw';
-        return st;
-      }
-    }
-    // the fake finish gate. it only reaches so high - jump it. sorry.
-    for (const f of lv.fakeExits) {
-      if (st.x + P - KILL_PAD > f.tx * TILE + 8 && st.x + KILL_PAD < f.tx * TILE + 24 &&
-          st.y + P - KILL_PAD > 336) {
-        st.dead = true; st.deadBy = 'fake';
-        return st;
       }
     }
   }
 
-  // --- win ----------------------------------------------------------------
-  if (st.x >= lv.finishX) {
-    st.won = true;
-  }
   return st;
 }
 
-function touchCrumble(st, tx, ty) {
-  const k = key(tx, ty);
-  if (!(k in st.touched) && !st.crumbled[k]) st.touched[k] = 0;
-}
-
-// drop the player onto the ground at the start
-function settle(lv, st) {
-  const tx = Math.floor((st.x + P / 2) / TILE);
-  for (let ty = 0; ty < lv.h; ty++) {
-    if (lv.solids[ty][tx]) {
-      st.y = ty * TILE - P;
-      st.grounded = true;
-      return;
+// beam paths for the renderer (which cells a turret covers right now)
+function beamCells(st, e) {
+  const cells = [];
+  for (const [bx, by] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    let cx = e.x + bx, cy = e.y + by;
+    while (true) {
+      const t = tileAt(st, cx, cy);
+      if (t === '#' || t === 'D') break;
+      const o = entAt(st, cx, cy);
+      if (o && o.kind === 'boulder') break;
+      cells.push([cx, cy]);
+      cx += bx; cy += by;
     }
   }
-  st.y = (lv.h - 3) * TILE;
+  return cells;
 }
 
-const Sim = { TILE, P, SAW_R, SAW_PERIOD, parseLevel, newState, step, settle, sawPos };
+const Sim = { DIRS, TURRET_PERIOD, parseRoom, newState, step, tileAt, entAt, beamCells };
 if (typeof module !== 'undefined' && module.exports) module.exports = Sim;
 else root.Sim = Sim;
 
