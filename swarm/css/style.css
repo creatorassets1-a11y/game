@@ -2,7 +2,7 @@ html, body {
   margin: 0;
   padding: 0;
   height: 100%;
-  background: #16202e;
+  background: #123;
   overflow: hidden;
   overscroll-behavior: none;
 }
@@ -15,7 +15,7 @@ body {
 
 #game {
   display: block;
-  background: #16202e;
+  background: #123;
   touch-action: none;
   -webkit-tap-highlight-color: transparent;
 }
