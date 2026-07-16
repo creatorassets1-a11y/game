@@ -1,59 +1,60 @@
-# SWARM!!
+# SWARM KEEP
 
-*100 waves. one tiny hero. infinite monsters.*
+*the swarm is back. this time, you build.*
 
-A loud, bright, one-thumb horde-survival game. You move — everything else
-is automatic. Your weapons fire themselves, monsters explode into gems and
-coins, level-ups stop time and hand you loot choices, and every tenth wave
-a boss with a name and a health bar comes looking for you.
+A bright cartoon tower defense: **50 levels across 5 worlds**, 8 towers,
+7 monster types, a boss at the end of every world, and — because losing a
+17-wave level to the last wave should never mean starting over —
+**checkpoints every 5 waves**.
 
-**Play:** open `index.html`. WASD or drag-to-move. That's the entire
-tutorial. No build, no dependencies.
+**Play:** open `index.html`. Everything is taps/clicks: pick a tower card,
+tap the grass, press START. Identical on phone and desktop. No build, no
+dependencies.
 
-## The loop
+## The game
 
-1. Monsters flood in from every edge — gloops, runners, brutes, spitters,
-   splitters, ghosts, and (from wave 15) glowing elites.
-2. Kills drop **XP gems** (they vacuum toward you) and **coins**.
-3. Level up → pick **1 of 3 cards**: new weapons (Zap Bolt, Orbit Blades,
-   Ring Nova, Chain Zap, Boomerang — each with 5 levels) or passives
-   (speed, magnet, max HP, damage, fire rate, luck).
-4. Every 10th wave: a **boss**. MEGAGLOOP, SPIT LORD, THE WALL... ten of
-   them, up to **THE SWARM KING** at wave 100.
-5. Die (you will) → your coins bank. Spend them on new heroes:
+- **8 towers**, each with 3 upgrade tiers that physically grow:
+  Pea Archer · Boom Cannon (splash, ground only) · Frost Prism (slows) ·
+  Tesla Spire (chain lightning) · Ember Totem (burn) · Longshot (map-wide
+  sniper) · Honey Bank (gold per wave) · War Drum (fire-rate aura)
+- **7 monsters**: gloops, runners, armored shells, flying floaties (bring
+  anti-air!), healers, splitters, brutes — plus five named world bosses
+  ending with **THE SWARM KING**
+- **Checkpoints:** cleared wave 5/10/15 saves your towers, gold and lives.
+  Defeat offers *RETRY FROM WAVE N* instead of a restart.
+- Stars per level (keep all 20 lives for 3★), 150 stars total, level-select
+  map across 5 themed worlds: Meadow, Dunes, Tundra, Cinder, The Void.
+- 2× speed toggle, sell/upgrade, early-wave banking strategy, juice
+  everywhere: pops, coin arcs, chain lightning, wave banners, fireworks.
 
-| hero | style |
-|---|---|
-| PIP | balanced little wizard (free) |
-| FANG | fast, boomerangs |
-| BRUNO | tanky bear, ring nova |
-| ZAPPY | robot, chain lightning |
-| MISO | ninja cat, orbit blades, very fast |
-| KING GLORP | the monsters' own king, starts with two weapons |
+## Every level is balance-proven
 
-Kill streaks build combos (NICE! → RAD!! → INSANE!!! → GODLIKE!!!!),
-damage numbers pop, the screen shakes, and the music adds a layer every
-ten waves. Best wave is saved forever.
+`tools/gen.mjs` generates each map, then a **balance bot plays it using the
+exact simulation the game runs** (`js/sim.js` is shared, deterministic and
+seeded). A tuning loop adjusts each level's monster HP until the bot *barely
+wins* — finishing with 3-10 of 20 lives. That means every level shipped is:
 
-## Tech notes
+1. **beatable** — the bot beat it, with the tower set you have,
+2. **challenging** — the bot nearly didn't,
+3. **fairly ramped** — the difficulty curve is measured, not guessed.
 
-- Pure canvas + WebAudio, zero asset files: every creature is a
-  pre-rendered cartoon blob sprite generated at load, all music and SFX
-  are synthesized live.
-- Simulates 240 monsters + bullets + particles at ~0.1ms per frame — a
-  full-horde frame budget measured in the browser test suite.
-- Verified with Playwright: autofire kills, level-up flow, boss spawn and
-  death, player death flow, mobile drag input, performance smoke test,
-  zero console errors.
+The bot's results live in `tools/balance_report.json`. Regenerate all 50
+levels with `node tools/gen.mjs`.
+
+On top of that, the browser test suite (Playwright) verifies the real game:
+an in-page bot beats level 1 through the public API, the checkpoint
+save/restore round-trips after a real defeat, the gold economy balances to
+the coin, mobile taps place towers, and a heavy world-4 fight stays fast.
 
 ## Controls
 
-|        |                          |
-|--------|--------------------------|
-| move   | WASD / arrows / drag     |
-| pause  | `P` / `esc`              |
-| mute   | `M`                      |
-| everything else | automatic       |
+|             |                                   |
+|-------------|-----------------------------------|
+| everything  | tap / click                       |
+| send wave   | START button / `space`            |
+| 2× speed    | speed chip / `F`                  |
+| deselect / back | `esc`                         |
+| mute        | `M`                               |
 
 ## Hosting
 
@@ -61,10 +62,10 @@ Static files — Vercel, GitHub Pages, itch.io, anywhere.
 
 ---
 
-Also in this repo, from earlier experiments:
-[`lockstep/`](lockstep/) — a turn-locked dungeon puzzler ·
-[`hundo/`](hundo/) — a one-button gauntlet ·
-[`umbra/`](umbra/) — a LIMBO-style silhouette platformer.
+The rest of the arcade, from earlier experiments:
+[`swarm/`](swarm/) horde survival · [`lockstep/`](lockstep/) turn-locked
+dungeon · [`hundo/`](hundo/) one-button gauntlet · [`umbra/`](umbra/)
+LIMBO-style platformer.
 
 ## License
 
